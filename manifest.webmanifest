@@ -1,0 +1,15 @@
+{
+  "name": "HLS Trading Academy",
+  "short_name": "HLS Academy",
+  "description": "An education-first trading course.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#070B1C",
+  "theme_color": "#070B1C",
+  "icons": [
+    { "src": "assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
