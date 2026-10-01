@@ -9,7 +9,7 @@ import { markStatic } from '../ui/mark.js';
 import { dualClock } from '../interactives/clock.js';
 import { formatTime, partsInZone } from '../time/zones.js';
 import { studyStreak } from '../core/derive.js';
-import { nextLesson, examStatus, dueConcepts, programProgress, rankName, levelStatus } from '../learn/progress.js';
+import { nextLesson, examStatus, retentionStatus, dueConcepts, programProgress, rankName, levelStatus } from '../learn/progress.js';
 import { weakAreas } from '../learn/weak.js';
 import { registerCleanup } from './cleanup.js';
 import { roman } from '../ui/roman.js';
@@ -35,16 +35,27 @@ export function todayView() {
   const level1 = c.levelByNumber.get(1);
   let action;
   const pendingReview = Object.values(st.written).filter((w) => w.status === 'pending').length;
-  const examReady = c.levels.filter((l) => !l.planned && l.finalBlueprint).map((l) => ({ l, s: examStatus(l, st, c) })).find((x) => x.s.available);
-  const targeted = c.levels.filter((l) => l.finalBlueprint).map((l) => ({ l, s: examStatus(l, st, c) })).find((x) => x.s.reviewPending);
+  const assessments = [
+    ...c.levels.filter((l) => !l.planned && l.finalBlueprint).map((l) => ({ id: l.finalBlueprint, level: l, title: `${l.track ? 'Track P' : 'Level ' + roman(l.number)} Assessment`, s: examStatus(l, st, c) })),
+    ...[...c.blueprints.values()].filter((b) => b.kind === 'retention').map((b) => ({ id: b.id, level: null, title: b.title, s: retentionStatus(b, st) }))
+  ];
+  const examReady = assessments.find((x) => x.s.available);
+  const awaiting = Object.values(st.exams).some((e) => e.attempts.length && e.attempts[e.attempts.length - 1].status === 'awaiting-mentor');
+  const targeted = assessments.find((x) => x.s.reviewPending);
   if (targeted) {
-    action = { title: 'Targeted Review', text: `${targeted.s.reviewPending.length} concept${targeted.s.reviewPending.length === 1 ? '' : 's'} to practice before your retake.`, label: 'Start The Review', route: `#/review/${targeted.l.finalBlueprint}` };
+    action = { title: 'Targeted Review', text: `${targeted.s.reviewPending.length} concept${targeted.s.reviewPending.length === 1 ? '' : 's'} to practice before your retake.`, label: 'Start The Review', route: `#/review/${targeted.id}` };
   } else if (next && (!examReady || next.level === 0)) {
     action = { title: `Continue · ${next.number}`, text: `${next.title} · ${next.estMinutes} min`, label: st.lessons[next.id] ? 'Continue The Lesson' : 'Start The Lesson', route: `#/lesson/${next.id}` };
   } else if (examReady) {
-    action = { title: `Level ${roman(examReady.l.number)} Assessment Ready`, text: 'You have finished every lesson in this level.', label: 'Begin The Assessment', route: `#/exam/${examReady.l.finalBlueprint}` };
+    action = examReady.level
+      ? { title: `${examReady.title} Ready`, text: 'You have finished every lesson in this level.', label: 'Begin The Assessment', route: `#/exam/${examReady.id}` }
+      : { title: `${examReady.title} Ready`, text: 'A short check on what has stayed with you. Your next rank waits for it.', label: 'Begin The Check', route: `#/exam/${examReady.id}` };
+  } else if (awaiting) {
+    action = { title: 'Waiting For Your Mentor', text: 'Your written answer is with your mentor. Your Warm-Up keeps this level fresh in the meantime.', label: 'Open The Curriculum', route: '#/curriculum' };
+  } else if (c.levels.filter((l) => l.number >= 1).every((l) => levelStatus(l, st, c) === 'passed')) {
+    action = { title: 'All Levels Complete', text: 'Keep your Warm-Up going, and see what remains in the curriculum.', label: 'Open The Curriculum', route: '#/curriculum' };
   } else if (levelStatus(level1, st, c) === 'passed') {
-    action = { title: 'Level I Complete', text: 'The next levels are being built. Keep your Warm-Up going.', label: 'Open The Curriculum', route: '#/curriculum' };
+    action = { title: 'Keep Going', text: 'Open the curriculum to see where you are.', label: 'Open The Curriculum', route: '#/curriculum' };
   } else {
     action = { title: 'Begin', text: 'Start with the Orientation.', label: 'Start Orientation', route: '#/lesson/l00-how-it-works' };
   }

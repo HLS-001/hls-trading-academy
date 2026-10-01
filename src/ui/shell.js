@@ -4,11 +4,14 @@ import { h, $ } from './dom.js';
 import { icon } from './kit.js';
 import { markStatic } from './mark.js';
 import { go } from '../core/router.js';
+import { app } from '../core/app.js';
+import { journalOpen } from '../views/journal.js';
 
 const TABS = [
   { id: 'today', label: 'Today', href: '#/today' },
   { id: 'curriculum', label: 'Curriculum', href: '#/curriculum' },
   { id: 'practice', label: 'Practice', href: '#/practice' },
+  { id: 'journal', label: 'Journal', href: '#/journal', optional: true },
   { id: 'progress', label: 'Progress', href: '#/progress' }
 ];
 
@@ -39,6 +42,10 @@ export function begin({ title = '', tab = null, back = null, right = null, focus
   refs.left.replaceChildren(back ? h('button', { class: 'tb-btn', type: 'button', 'aria-label': 'Back', onclick: () => (typeof back === 'function' ? back() : go(back)) }, icon('back')) : markStatic(30));
   refs.right.replaceChildren(...(right ? [].concat(right) : [h('a', { class: 'tb-btn', href: '#/settings', 'aria-label': 'Settings' }, icon('gear'))]));
   refs.tabs.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === tab));
+  const showJournal = !!(app.state && journalOpen(app.state));
+  const jt = refs.tabs.querySelector('[data-tab="journal"]');
+  if (jt) jt.hidden = !showJournal;
+  refs.tabs.style.gridTemplateColumns = `repeat(${showJournal ? 5 : 4},1fr)`;
   document.body.classList.toggle('focus-mode', !!focus);
   refs.screen.scrollTop = 0;
   window.scrollTo(0, 0);

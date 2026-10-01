@@ -13,7 +13,7 @@ import { makeRng } from './rng.js';
 
 /* ------------------------------------------------ building a form */
 
-export function buildForm(bp, { questions, templates = [], seen = {}, seed }) {
+export function buildForm(bp, { questions, templates = [], seen = {}, seed, weak = [], levelConcepts = new Map() }) {
   const rng = makeRng(String(bp.id) + '#' + seed);
   const items = [];
   const used = new Set();
@@ -37,7 +37,15 @@ export function buildForm(bp, { questions, templates = [], seen = {}, seed }) {
       }
       return;
     }
-    const pool = slot.pool || {};
+    let pool = slot.pool || {};
+    if (slot.cumulative) {
+      // a cumulative slot draws from earlier levels, weakest concepts first
+      const ids = new Set();
+      for (const n of slot.cumulative.levels || []) for (const c of levelConcepts.get(n) || []) ids.add(c);
+      pool = { ...pool, concepts: [...ids] };
+    }
+    const weakRank = new Map(weak.map((c, i) => [c, i]));
+    const rank = (q) => Math.min(...q.concepts.map((c) => (weakRank.has(c) ? weakRank.get(c) : 1e6)));
     let candidates = questions.filter(
       (q) =>
         q.examEligible !== false &&
@@ -49,7 +57,7 @@ export function buildForm(bp, { questions, templates = [], seen = {}, seed }) {
         (!slot.types || slot.types.includes(q.type))
     );
     // unseen items first, otherwise least-seen; ties broken by the seeded shuffle
-    candidates = rng.shuffle(candidates).sort((a, b) => (seen[a.id] || 0) - (seen[b.id] || 0));
+    candidates = rng.shuffle(candidates).sort((a, b) => (seen[a.id] || 0) - (seen[b.id] || 0) || (slot.cumulative ? rank(a) - rank(b) : 0));
     const perConcept = {};
     const max = slot.maxPerConcept || Infinity;
     const picked = [];
@@ -116,8 +124,10 @@ export function scoreExam(bp, form, results, writtenStatus = {}) {
 
   const gates = (bp.criticalGates || []).map((g) => {
     const items = graded.filter((r) => (g.parts && g.parts.includes(r.part) && (!g.tag || (r.tags || []).includes(g.tag))) || (!g.parts && g.tag && (r.tags || []).includes(g.tag)));
-    const acc = items.length ? items.reduce((a, r) => a + r.score, 0) / items.length : null;
-    return { id: g.id, description: g.description, min: g.min, n: items.length, score: acc, met: acc !== null && acc >= g.min };
+    const acc = items.length ? (g.strict ? items.filter((r) => r.score >= 1).length : items.reduce((a, r) => a + r.score, 0)) / items.length : null;
+    const errors = g.maxErrors ? items.reduce((a, r) => a + (r.errorTags || []).filter((t) => g.maxErrors.tags.includes(t)).length, 0) : 0;
+    const errorsOk = !g.maxErrors || errors <= g.maxErrors.max;
+    return { id: g.id, description: g.description, min: g.min, n: items.length, score: acc, errors, met: acc !== null && acc >= g.min && errorsOk };
   });
   const failedGates = gates.filter((g) => !g.met).map((g) => g.id);
 
@@ -127,11 +137,12 @@ export function scoreExam(bp, form, results, writtenStatus = {}) {
   const writtenPending = written.some((w) => w.status === 'pending' || w.status === 'unsubmitted');
   const writtenMeets = written.every((w) => w.status === 'meets');
 
+  const practicals = (bp.practicals || []).map((p) => p.id);
   let status;
   if (!autoPass) status = 'failed';
   else if (writtenPending) status = 'awaiting-mentor';
-  else if (writtenMeets) status = 'passed';
-  else status = 'failed-written';
+  else if (!writtenMeets) status = 'failed-written';
+  else status = practicals.length ? 'awaiting-practical' : 'passed';
 
   const weakConcepts = Object.entries(conceptStats)
     .map(([concept, s]) => ({ concept, n: s.n, accuracy: s.sum / s.n }))
@@ -147,6 +158,7 @@ export function scoreExam(bp, form, results, writtenStatus = {}) {
     failedGates,
     autoPass,
     written,
+    practicals,
     status,
     diagnostic: { weakConcepts, errorTags, failedGates, failedParts }
   };

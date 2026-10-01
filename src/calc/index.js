@@ -337,3 +337,42 @@ export const inverseQuote = (rate) => 1 / rate;
 
 /** Cross rate of A/C from A/B and C/B (both quoted against B). e.g. EUR/GBP = EUR/USD ÷ GBP/USD. */
 export const crossRate = (aPerB, cPerB) => aPerB / cPerB;
+
+/* ---------------------------------------------------------------- quotes, sizes and account (Level 3) */
+
+/** The spread between a bid and an ask, in pips. */
+export const spreadPips = (symbol, bid, ask) => toPips(symbol, ask - bid);
+
+/** Units of the base currency in a position. */
+export const unitsFromLots = (lots, contractSize = 100000) => lots * contractSize;
+export const lotsFromUnits = (units, contractSize = 100000) => units / contractSize;
+
+/** The value of a position, in the account currency, at the given price (before dividing by leverage). */
+export function notionalValue({ lots, symbol, price, acct = 'USD', rates = {} }) {
+  const m = getMarket(symbol);
+  return lots * m.contractSize * price * convRate(m.quote, acct, rates);
+}
+
+/** How many times the position is larger than the account equity. */
+export const effectiveLeverage = (notional, equity) => notional / equity;
+
+/**
+ * How many pips the market can move against a position before the margin level falls to `level` percent.
+ * (Brokers set their own margin-call and stop-out levels; this only does the arithmetic.)
+ */
+export function pipsToMarginLevel({ balance, usedMargin, pipValue, level }) {
+  const equityAtLevel = (level / 100) * usedMargin;
+  return (balance - equityAtLevel) / pipValue;
+}
+
+/** Overnight charge (negative number) or credit (positive) for holding a position. */
+export const swapMoney = ({ lots, perLotPerNight, nights }) => lots * perLotPerNight * nights;
+
+/** Commission for a round trip, charged per lot. */
+export const commissionMoney = ({ lots, perLotRoundTrip }) => lots * perLotRoundTrip;
+
+/** Every cost of a trade added up as a positive number. Swap is passed as a charge (positive = cost). */
+export const totalCostMoney = ({ spreadCost = 0, commission = 0, swapCharge = 0, slippageCost = 0 }) => spreadCost + commission + swapCharge + slippageCost;
+
+/** Profit or loss in pips for a long (+1) or short (-1) trade, from the prices actually traded at. */
+export const pipsResult = ({ symbol, dir, entry, exit }) => dir * toPips(symbol, exit - entry);

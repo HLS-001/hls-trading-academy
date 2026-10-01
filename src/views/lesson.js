@@ -6,9 +6,10 @@
 import { app, emit } from '../core/app.js';
 import { go } from '../core/router.js';
 import { h, mount, rich, mdInline } from '../ui/dom.js';
-import { button, card, chip, stepRail, openSheet, leafBurst, bar, ornament } from '../ui/kit.js';
+import { button, card, chip, stepRail, openSheet, leafBurst, bar, ornament, trackBanner } from '../ui/kit.js';
 import { begin } from '../ui/shell.js';
 import { figure } from '../ui/figures.js';
+import { tableStim } from '../exercises/stimulus.js';
 import { columnSvg } from '../ui/mark.js';
 import { renderQuestion } from '../exercises/render.js';
 import { runSet } from '../exercises/runner.js';
@@ -46,6 +47,7 @@ export function blockNode(b) {
       return h('div', { class: 'example' }, h('div', { class: 'example-title' }, b.title), h('ol', null, ...b.steps.map((st) => h('li', { html: mdInline(st) }))));
     case 'terms': return termsRow(b.ids);
     case 'figure': return figure(b.name);
+    case 'table': return tableStim({ title: b.title, sub: b.sub, head: b.head, rows: b.rows, foot: b.foot, note: b.note, text: b.text, tag: b.tag || 'Teaching Example' });
     default: return h('div');
   }
 }
@@ -97,13 +99,13 @@ export function lessonView({ id }) {
     if (i > 0) nav.append(button('Back', { variant: 'ghost', onClick: () => show(i - 1, -1) }));
     nav.append(cont);
 
-    const body = h('div', { class: 'step-body ' + (direction > 0 ? 'in-right' : 'in-left'), dataset: { kind: step.kind, widget: step.widget || '' } });
+    const body = h('div', { class: 'step-body ' + (direction > 0 ? 'in-right' : 'in-left'), dataset: { kind: step.kind, widget: step.widget || '', mode: step.mode || '', types: (step.types || []).join(',') } });
     const title = stepTitle(step);
     const built = buildStep(step, { lesson, ctx, setReady, i, completed, rerender: () => show(i, 1), gotoStep: show, setCheckScore: (s) => (checkScore = Math.max(checkScore, s)) });
     body.append(h('h2', { class: 'step-title' }, title), built);
 
     mount(host,
-      h('div', { class: 'lesson-head' }, h('div', { class: 'lesson-num' }, `${lesson.number} · ${lesson.estMinutes} min`), h('h1', null, lesson.title), stepRail(steps.length, i)),
+      h('div', { class: 'lesson-head' }, h('div', { class: 'lesson-num' }, `${lesson.number} · ${lesson.estMinutes} min`), h('h1', null, lesson.title), level && level.track ? trackBanner() : null, stepRail(steps.length, i)),
       body,
       nav);
     window.scrollTo(0, 0);

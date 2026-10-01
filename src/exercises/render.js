@@ -11,16 +11,18 @@ import { h, mdInline, rich } from '../ui/dom.js';
 import { button, chip } from '../ui/kit.js';
 import { numberEntry, NumberField, keypad, displayText } from '../ui/keypad.js';
 import { makeRng } from '../learn/rng.js';
-import { gradeItem } from './resolve.js';
+import { gradeItem, isChoiceItem } from './resolve.js';
 import { stimulusNode } from './stimulus.js';
+import { chartUI } from './chartui.js';
 import { formatUnit, parseNumber } from '../learn/templates.js';
 
 const LETTERS = 'ABCDEFGH';
-const TYPE_LABEL = { mcq: 'Multiple Choice', multi: 'Choose All That Apply', tfr: 'True Or False', sort: 'Sort', sequence: 'Put In Order', match: 'Match', num: 'Calculation', numeric: 'Calculation', steps: 'Step By Step', written: 'In Your Own Words' };
+const TYPE_LABEL = { mcq: 'Multiple Choice', multi: 'Choose All That Apply', tfr: 'True Or False', sort: 'Sort', sequence: 'Put In Order', match: 'Match', flaws: 'Spot The Flaws', place: 'Place The Order', chart: 'On The Chart', branch: 'Scenario', audit: 'Process Audit', num: 'Calculation', numeric: 'Calculation', steps: 'Step By Step', written: 'In Your Own Words' };
 
 export function renderQuestion(item, { mode = 'practice', shuffleSeed = 1, onAnswer, labelExtra } = {}) {
-  const q = item.kind === 'q' ? item.q : null;
-  const type = item.kind === 't' ? (item.mode === 'steps' ? 'steps' : 'numeric') : q.type;
+  const choice = isChoiceItem(item);
+  const q = choice ? item.problem.question : item.kind === 'q' ? item.q : null;
+  const type = item.kind === 't' && !choice ? (item.mode === 'steps' ? 'steps' : 'numeric') : q.type;
   const rng = makeRng(String(item.id) + '#' + shuffleSeed);
   const exam = mode === 'exam';
 
@@ -44,6 +46,11 @@ export function renderQuestion(item, { mode = 'practice', shuffleSeed = 1, onAns
     case 'sort': ui = sortUI(q, rng); break;
     case 'sequence': ui = sequenceUI(q, rng); break;
     case 'match': ui = matchUI(q, rng); break;
+    case 'flaws': ui = flawsUI(q); break;
+    case 'place': ui = placeUI(q); break;
+    case 'branch': ui = branchUI(q); break;
+    case 'audit': ui = auditUI(q); break;
+    case 'chart': ui = chartUI(q, { exam, commit: (response, meta) => finish(response, meta) }); break;
     case 'written': ui = writtenUI(q, { exam }); break;
     case 'steps': ui = stepsUI(item); break;
     default: ui = numericUI(item, () => submit()); break; // num and numeric templates
@@ -61,6 +68,21 @@ export function renderQuestion(item, { mode = 'practice', shuffleSeed = 1, onAns
     submitBtn.disabled = !ui.isComplete();
     el.append(h('div', { class: 'qactions' }, submitBtn));
     ui.onChange(() => (submitBtn.disabled = answered || !ui.isComplete()));
+  }
+
+  /** A chart question runs its own feedback ladder and calls this once, with how much help it took. */
+  function finish(response, meta = {}) {
+    if (answered) return;
+    answered = true;
+    const result = { ...gradeItem(item, response) };
+    if (meta.revealed) Object.assign(result, { score: 0, correct: false, revealed: true });
+    else if (meta.mult !== undefined && meta.mult < 1) Object.assign(result, { score: result.score * meta.mult, correct: false });
+    if (meta.hinted) result.hinted = true;
+    ui.lock(result);
+    el.classList.add('locked', result.correct ? 'ok' : 'no');
+    feedbackHost.replaceChildren(feedbackNode(result, item, type));
+    if (result.correct) el.classList.add('pulse-ok');
+    onAnswer && onAnswer(result, response);
   }
 
   function submit() {
@@ -109,7 +131,7 @@ function feedbackNode(result, item, type) {
     wrap.append(h('div', { class: 'fb-mistake' }, chip('Common Mistake', 'gold'), h('span', null, ' ' + capitalize(tags[tag].label)), h('p', { class: 'fb-fix' }, tags[tag].fix)));
   }
   if (result.feedback) wrap.append(rich(result.feedback, 'p', { class: 'fb-text' }));
-  if (!ok && item.kind === 't' && item.mode !== 'steps' && !result.matchedMistake) wrap.append(h('p', { class: 'fb-answer' }, 'Answer: ', h('strong', null, item.problem.answerText)));
+  if (!ok && item.kind === 't' && !isChoiceItem(item) && item.mode !== 'steps' && !result.matchedMistake) wrap.append(h('p', { class: 'fb-answer' }, 'Answer: ', h('strong', null, item.problem.answerText)));
   if (!ok && item.kind === 'q' && item.q.type === 'num') wrap.append(h('p', { class: 'fb-answer' }, 'Answer: ', h('strong', null, formatUnit(item.q.answer, item.q.unit || {}))));
   if (type === 'steps') {
     const list = h('ol', { class: 'fb-steps' });
@@ -401,6 +423,188 @@ function matchUI(q, rng) {
         lefts.forEach((l) => fix.append(h('p', null, h('strong', null, l.text), ' → ', q.right.find((r) => r.id === q.answer[l.id]).text)));
         node.append(fix);
       }
+    }
+  };
+}
+
+/* ------------------------------------------------------------------ place an order on the ladder */
+
+function placeUI(q) {
+  const m = q.market;
+  let picked = null;
+  const listeners = [];
+  const changed = () => listeners.forEach((f) => f());
+  const rows = [
+    { price: m.ask, label: 'Ask · buy price', tone: 'ask', fixed: true },
+    { price: m.bid, label: 'Bid · sell price', tone: 'bid', fixed: true },
+    ...q.candidates.map((p) => ({ price: p, label: 'Tap to place here', tone: 'cand' }))
+  ].sort((a, b) => b.price - a.price);
+  const els = rows.map((r) => (r.fixed
+    ? h('div', { class: 'ladder-row ' + r.tone }, h('b', null, r.price.toFixed(m.dq)), h('span', null, r.label))
+    : h('button', { type: 'button', class: 'ladder-row cand', 'data-p': String(r.price), onclick: () => pick(r.price) }, h('b', null, r.price.toFixed(m.dq)), h('span', null, r.label))));
+  const node = h('div', { class: 'placeui' }, h('p', { class: 'hint-line' }, 'Tap the price where the platform would accept this order.'), h('div', { class: 'ladder-rows' }, ...els));
+  const pick = (p) => {
+    if (node.classList.contains('done')) return;
+    picked = p;
+    els.forEach((e) => e.dataset && e.dataset.p && e.classList.toggle('sel', +e.dataset.p === p));
+    changed();
+  };
+  return {
+    node,
+    getResponse: () => picked,
+    isComplete: () => picked !== null,
+    onChange: (f) => listeners.push(f),
+    lock: (result) => {
+      node.classList.add('done');
+      node.querySelectorAll('button').forEach((b) => (b.disabled = true));
+      if (!result) return;
+      els.forEach((e) => {
+        if (!e.dataset || !e.dataset.p) return;
+        const p = +e.dataset.p;
+        if (q.answer.some((a) => Math.abs(a - p) < 1e-9)) e.classList.add(picked === p ? 'right' : 'missed');
+        else if (picked === p) e.classList.add('wrong');
+      });
+    }
+  };
+}
+
+/* ------------------------------------------------------------------ a scenario that unfolds (E28) */
+
+function branchUI(q) {
+  const path = [];
+  const listeners = [];
+  const changed = () => listeners.forEach((f) => f());
+  const node = h('div', { class: 'branchui' });
+  let ended = false;
+  let locked = false;
+  let result = null;
+  const draw = () => {
+    const steps = [];
+    let id = q.start;
+    ended = false;
+    for (let k = 0; id && k < 30; k++) {
+      const nd = q.nodes[id];
+      const chosen = path[k];
+      const opts = nd.options.map((o) => {
+        const cls = ['opt'];
+        if (o.id === chosen) cls.push('sel');
+        if (result && o.id === chosen) cls.push(o.score === 1 ? 'right' : 'wrong');
+        return h('button', { type: 'button', class: cls.join(' '), 'data-id': o.id, 'data-step': String(k), disabled: locked, onclick: () => pick(k, o.id) }, o.label);
+      });
+      const why = result && chosen ? nd.options.find((o) => o.id === chosen) : null;
+      steps.push(h('div', { class: 'branch-step' }, rich(nd.text, 'p', { class: 'branch-text' }), h('div', { class: 'choices col' }, ...opts), why && why.why && why.score < 1 ? h('p', { class: 'flaw-fix' }, why.why) : null));
+      if (!chosen) break;
+      const opt = nd.options.find((o) => o.id === chosen);
+      if (opt.next === null || opt.next === undefined) {
+        ended = true;
+        break;
+      }
+      id = opt.next;
+    }
+    node.replaceChildren(...steps);
+  };
+  const pick = (k, id) => {
+    if (locked) return;
+    path.length = k;
+    path[k] = id;
+    draw();
+    changed();
+  };
+  draw();
+  return {
+    node,
+    getResponse: () => [...path],
+    isComplete: () => ended,
+    onChange: (f) => listeners.push(f),
+    lock: (r) => {
+      locked = true;
+      result = r;
+      draw();
+    }
+  };
+}
+
+/* ------------------------------------------------------------------ a process audit with the result hidden (E29) */
+
+const AUDIT_RULE_LABELS = { yes: 'Followed', no: 'Not Followed', unknown: 'Cannot Tell' };
+const AUDIT_PROCESS_LABELS = { followed: 'Followed The Plan', partly: 'Followed Some Of It', broke: 'Broke The Plan' };
+
+function auditUI(q) {
+  const rules = {};
+  let process = null;
+  const listeners = [];
+  const changed = () => listeners.forEach((f) => f());
+  let locked = false;
+  const trade = h('div', { class: 'stim tablestim' }, h('div', { class: 'stim-tag' }, 'The Trade (Result Hidden)'), q.trade.title ? h('div', { class: 'stim-title' }, q.trade.title) : null,
+    h('table', { class: 'stim-table' }, h('tbody', null, ...q.trade.rows.map((r) => h('tr', null, h('td', null, r[0]), h('td', { html: mdInline(String(r[1])) }))))));
+  const ruleRows = q.rules.map((r) => {
+    const chips = ['yes', 'no', 'unknown'].map((v) => h('button', { type: 'button', class: 'opt small', 'data-r': r.id, 'data-v': v, onclick: () => { if (locked) return; rules[r.id] = v; refresh(); changed(); } }, AUDIT_RULE_LABELS[v]));
+    return { r, chips, el: h('div', { class: 'flaw-claim', 'data-rule': r.id }, h('p', { class: 'flaw-text' }, r.text), h('div', { class: 'flaw-chips' }, ...chips)) };
+  });
+  const procChips = Object.entries(AUDIT_PROCESS_LABELS).map(([v, label]) => h('button', { type: 'button', class: 'opt small', 'data-v': v, onclick: () => { if (locked) return; process = v; refresh(); changed(); } }, label));
+  const revealHost = h('div');
+  const node = h('div', { class: 'auditui' }, trade, h('p', { class: 'hint-line' }, 'Judge each rule from the record alone. Then rate the process. The result is shown after you commit.'), ...ruleRows.map((r) => r.el),
+    h('div', { class: 'flaw-claim' }, h('p', { class: 'flaw-text' }, h('b', null, 'Process Rating')), h('div', { class: 'flaw-chips' }, ...procChips)), revealHost);
+  const refresh = () => {
+    ruleRows.forEach((r) => r.chips.forEach((c) => c.classList.toggle('sel', rules[r.r.id] === c.dataset.v)));
+    procChips.forEach((c) => c.classList.toggle('sel', process === c.dataset.v));
+  };
+  return {
+    node,
+    getResponse: () => ({ rules: { ...rules }, process }),
+    isComplete: () => q.rules.every((r) => rules[r.id]) && !!process,
+    onChange: (f) => listeners.push(f),
+    lock: (result) => {
+      locked = true;
+      node.querySelectorAll('button').forEach((b) => (b.disabled = true));
+      if (!result) return;
+      ruleRows.forEach((row) => {
+        const ok = rules[row.r.id] === row.r.answer;
+        row.el.classList.add(ok ? 'right' : 'wrong');
+        if (!ok) row.el.append(h('p', { class: 'flaw-fix' }, 'Correct: ', h('strong', null, AUDIT_RULE_LABELS[row.r.answer]), row.r.why ? ' · ' + row.r.why : ''));
+      });
+      procChips.forEach((c) => {
+        if (c.dataset.v === q.processAnswer) c.classList.add('right');
+        else if (c.dataset.v === process) c.classList.add('wrong');
+      });
+      if (q.reveal) revealHost.replaceChildren(h('div', { class: 'stim tablestim' }, h('div', { class: 'stim-tag' }, 'The Result, Now Revealed'), q.reveal.text ? h('p', { html: mdInline(q.reveal.text) }) : null,
+        q.reveal.rows ? h('table', { class: 'stim-table' }, h('tbody', null, ...q.reveal.rows.map((r) => h('tr', null, h('td', null, r[0]), h('td', null, String(r[1])))))) : null));
+    }
+  };
+}
+
+/* ------------------------------------------------------------------ spot the flaws */
+
+function flawsUI(q) {
+  const picks = {}; // claimId -> 'ok' | flawTypeId
+  const listeners = [];
+  const changed = () => listeners.forEach((f) => f());
+  const labelOf = (id) => (id === 'ok' ? 'Fine' : q.flawTypes.find((t) => t.id === id).label);
+  const rows = q.claims.map((c, i) => {
+    const chips = [{ id: 'ok', label: 'Fine' }, ...q.flawTypes].map((t) => h('button', { type: 'button', class: 'opt small', 'data-c': c.id, 'data-v': t.id, onclick: () => pick(c.id, t.id) }, t.label));
+    return { c, chips, el: h('div', { class: 'flaw-claim', 'data-claim': c.id }, h('p', { class: 'flaw-text' }, h('em', null, String(i + 1)), c.text), h('div', { class: 'flaw-chips' }, ...chips)) };
+  });
+  const node = h('div', { class: 'flawsui' }, h('p', { class: 'hint-line' }, 'Judge each statement. Tap Fine, or tap the flaw it contains.'), ...rows.map((r) => r.el));
+  const pick = (cid, v) => {
+    if (node.classList.contains('done')) return;
+    picks[cid] = v;
+    rows.find((r) => r.c.id === cid).chips.forEach((b) => b.classList.toggle('sel', b.dataset.v === v));
+    changed();
+  };
+  return {
+    node,
+    getResponse: () => ({ ...picks }),
+    isComplete: () => q.claims.every((c) => picks[c.id]),
+    onChange: (f) => listeners.push(f),
+    lock: (result) => {
+      node.classList.add('done');
+      node.querySelectorAll('button').forEach((b) => (b.disabled = true));
+      if (!result) return;
+      rows.forEach((r) => {
+        const ok = picks[r.c.id] === q.answer[r.c.id];
+        r.el.classList.add(ok ? 'right' : 'wrong');
+        if (!ok) r.el.append(h('p', { class: 'flaw-fix' }, 'Correct answer: ', h('strong', null, labelOf(q.answer[r.c.id])), q.claimFeedback && q.claimFeedback[r.c.id] ? ' · ' + q.claimFeedback[r.c.id] : ''));
+      });
     }
   };
 }

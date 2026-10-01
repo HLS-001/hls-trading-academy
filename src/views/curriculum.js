@@ -3,11 +3,11 @@
 import { app } from '../core/app.js';
 import { go } from '../core/router.js';
 import { h, mount, rich, mdInline } from '../ui/dom.js';
-import { button, card, chip, bar, icon, ornament } from '../ui/kit.js';
+import { button, card, chip, bar, icon, ornament, trackBanner } from '../ui/kit.js';
 import { begin } from '../ui/shell.js';
 import { columnSvg } from '../ui/mark.js';
-import { roman } from '../ui/roman.js';
-import { levelStatus, levelProgress, lessonStatus, examStatus, rankName } from '../learn/progress.js';
+import { roman, levelLabel } from '../ui/roman.js';
+import { levelStatus, levelProgress, lessonStatus, examStatus, retentionStatus, checksAfter, rankName } from '../learn/progress.js';
 
 const PHASE_COLOR = { A: 'teal', B: 'violet', C: 'rose', D: 'gold' };
 
@@ -17,7 +17,8 @@ export function curriculumView(_p, query = {}) {
   const c = app.content;
   const st = app.state;
   const screen = begin({ title: 'The Colonnade', tab: 'curriculum' });
-  const levels = c.levels.filter((l) => l.number >= 1);
+  const levels = c.levels.filter((l) => l.number >= 1 && !l.track);
+  const tp = c.levels.find((l) => l.track);
   const l0 = c.levelByNumber.get(0);
 
   // default selection: the first level that is not passed and not planned, else the last real level
@@ -64,12 +65,15 @@ export function curriculumView(_p, query = {}) {
   const l0s = levelStatus(l0, st, c);
   const orient = h('a', { class: 'card orient', href: '#/level/0' }, h('div', null, h('b', null, 'Orientation'), h('span', null, `${l0.lessonIds.filter((id) => st.lessons[id]?.state === 'completed').length} of ${l0.lessonIds.length} done`)), chip(l0s === 'passed' ? 'Complete' : 'Start Here', l0s === 'passed' ? 'emerald' : 'gold'));
 
+  const trackCard = tp && !tp.planned ? h('a', { class: 'card trackp-card', href: `#/level/${tp.number}` }, h('div', null, h('b', null, 'Track P'), h('span', null, `Platforms, brokers and the path to live · ${tp.lessonIds.filter((id) => st.lessons[id]?.state === 'completed').length} of ${tp.lessonIds.length} done`)), chip(levelStatus(tp, st, c) === 'passed' ? 'Complete' : levelStatus(tp, st, c) === 'locked' ? 'Opens After Level IV' : 'Open', levelStatus(tp, st, c) === 'passed' ? 'emerald' : 'sky')) : null;
+
   mount(screen,
     h('div', { class: 'pedi' }, h('div', { class: 'pedi-svg', html: '<svg viewBox="0 0 361 62" preserveAspectRatio="none"><path d="M6 60 L180.5 6 L355 60 Z" fill="rgba(11,16,48,.7)" stroke="url(#hlsGold)" stroke-width="3" stroke-linejoin="round"/></svg>' }), h('b', null, `Rank · ${rankName(st.rank.current)}`)),
     cols,
     h('div', { class: 'legend2' }, h('span', null, h('i', { style: { background: 'var(--teal)' } }), 'Foundations'), h('span', null, h('i', { style: { background: 'var(--imperial-hi)' } }), 'Reading Price'), h('span', null, h('i', { style: { background: 'var(--rose)' } }), 'Risk'), h('span', null, h('i', { style: { background: 'var(--gold)' } }), 'Strategy')),
     detail,
-    orient);
+    orient,
+    trackCard);
   draw();
 }
 
@@ -79,12 +83,13 @@ export function levelView({ n }) {
   const c = app.content;
   const st = app.state;
   const level = c.levelByNumber.get(+n);
-  const screen = begin({ title: level ? `Level ${roman(level.number)}` : 'Level', back: '#/curriculum', tab: 'curriculum' });
+  const screen = begin({ title: level ? levelLabel(level) : 'Level', back: '#/curriculum', tab: 'curriculum' });
   if (!level) return mount(screen, card(h('p', null, 'That level does not exist.')));
 
   const s = levelStatus(level, st, c);
   const head = h('div', { class: 'level-head' },
-    h('div', { class: 'eyebrow' }, level.number === 0 ? 'Orientation' : 'Level ' + roman(level.number)),
+    h('div', { class: 'eyebrow' }, level.number === 0 ? 'Orientation' : levelLabel(level)),
+    level.track ? trackBanner() : null,
     h('h1', null, level.title),
     ornament(),
     rich(level.purpose, 'p', { class: 'purpose' }),
@@ -107,7 +112,24 @@ export function levelView({ n }) {
   });
 
   const exam = level.finalBlueprint ? examCard(level) : null;
-  mount(screen, head, objectives, h('div', { class: 'lessons' }, ...rows), exam);
+  const checks = checksAfter(level.number, c).map((bp) => checkCard(bp));
+  mount(screen, head, objectives, h('div', { class: 'lessons' }, ...rows), exam, ...checks);
+}
+
+/** A retention check: shown under the last level it covers. */
+function checkCard(bp) {
+  const st = app.state;
+  const es = retentionStatus(bp, st);
+  const record = st.exams[bp.id];
+  const last = record && record.attempts[record.attempts.length - 1];
+  const kids = [h('div', { class: 'exam-title' }, bp.title), h('p', null, bp.intro)];
+  if (record && record.passed) kids.push(chip('Passed', 'emerald'));
+  else if (last) kids.push(h('p', { class: 'hint-line' }, `Last attempt: ${Math.round(last.overall * 100)}% · ${statusText(last.status)}`));
+  if (es.available) kids.push(button(last ? 'Retake The Check' : 'Begin The Check', { onClick: () => go(`#/exam/${bp.id}`) }));
+  else if (es.reviewPending) kids.push(h('p', { class: 'hint-line' }, es.reason), button('Start The Targeted Review', { onClick: () => go(`#/review/${bp.id}`) }));
+  else if (last && es.passed) kids.push(button('See The Result', { variant: 'ghost', onClick: () => go(`#/exam-result/${bp.id}/${last.attemptId}`) }));
+  else kids.push(h('p', { class: 'hint-line' }, es.reason));
+  return h('div', { class: 'card exam-card check-card' }, ...kids);
 }
 
 function examCard(level) {
@@ -124,7 +146,11 @@ function examCard(level) {
   else if (es.reviewPending) kids.push(h('p', { class: 'hint-line' }, es.reason), button('Start The Targeted Review', { onClick: () => go(`#/review/${bp.id}`) }));
   else if (last && (last.status === 'awaiting-mentor' || es.passed)) kids.push(button('See The Result', { variant: 'ghost', onClick: () => go(`#/exam-result/${bp.id}/${last.attemptId}`) }));
   else kids.push(h('p', { class: 'hint-line' }, es.reason));
+  if (es.families && es.families.length) {
+    const names = level.masteryFamilyNames || {};
+    kids.push(h('ul', { class: 'l-list' }, ...es.families.map((f) => h('li', null, names[f] || f))), button('Open The Mastery Lab', { onClick: () => go('#/practice/mastery') }));
+  }
   return h('div', { class: 'card exam-card' }, ...kids);
 }
 
-export const statusText = (s) => ({ passed: 'Passed', failed: 'Not yet', 'failed-written': 'Written answer needs work', 'awaiting-mentor': 'Waiting for your mentor' })[s] || s;
+export const statusText = (s) => ({ passed: 'Passed', failed: 'Not yet', 'failed-written': 'Written answer needs work', 'awaiting-mentor': 'Waiting for your mentor', 'awaiting-practical': 'Waiting for the practical' })[s] || s;

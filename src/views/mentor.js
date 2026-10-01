@@ -14,8 +14,17 @@ import { roman } from '../ui/roman.js';
 import { masteryOf, statusOf, STATUS_LABEL } from '../learn/mastery.js';
 import { weakAreas } from '../learn/weak.js';
 import { makePackage, restoreControl } from './settings.js';
+import { stimulusNode } from '../exercises/stimulus.js';
+import { DOC_KINDS, docStatus, pendingDocs, DOC_STATUS_LABEL } from '../learn/docs.js';
+import { RISK_FIELDS, BEHAVIOR_FIELDS, checkRiskPlan, riskConsequences } from '../interactives/riskplan.js';
+import { STRATEGY_FIELDS, checkStrategy, vagueFlags } from '../learn/strategy.js';
+import { assignTab } from './assignments.js';
+import { methodTab } from './methodology.js';
+import { PLATFORM_TASKS, checkPlatforms, PATH_FIELDS, checkPath } from '../learn/trackp.js';
+import { chartStim } from '../exercises/stimulus.js';
 
 let unlocked = false;
+export const mentorUnlocked = () => unlocked;
 
 export const lockMentor = () => (unlocked = false);
 
@@ -63,9 +72,10 @@ function pendingWritten() {
 function mentorHome(tab = 'queue') {
   const screen = begin({ title: 'Mentor Mode', back: '#/settings' });
   const queue = pendingWritten();
-  const tabs = h('div', { class: 'seg' }, ...[['queue', `Review (${queue.length})`], ['record', 'Student'], ['settings', 'Settings'], ['files', 'Files']].map(([id, label]) => h('button', { type: 'button', class: 'seg-btn' + (id === tab ? ' on' : ''), onclick: () => mentorHome(id) }, label)));
+  const approvals = pendingDocs(app.state);
+  const tabs = h('div', { class: 'seg' }, ...[['queue', `Review (${queue.length + approvals.length})`], ['assign', 'Assign'], ['method', 'Method'], ['record', 'Student'], ['settings', 'Settings'], ['files', 'Files']].map(([id, label]) => h('button', { type: 'button', class: 'seg-btn' + (id === tab ? ' on' : ''), onclick: () => mentorHome(id) }, label)));
   const body = h('div', { class: 'seg-body' });
-  ({ queue: queueTab, record: recordTab, settings: settingsTab, files: filesTab })[tab](body);
+  ({ queue: queueTab, assign: assignTab, method: methodTab, record: recordTab, settings: settingsTab, files: filesTab })[tab](body);
   mount(screen, tabs, body, h('div', { class: 'qactions' }, button('Lock Mentor Mode', { variant: 'ghost', onClick: () => { lockMentor(); go('#/today'); } })));
 }
 
@@ -73,8 +83,9 @@ function mentorHome(tab = 'queue') {
 
 function queueTab(body) {
   const queue = pendingWritten();
-  if (!queue.length) return mount(body, card(h('p', null, 'No written answers are waiting.')), historyBlock());
-  mount(body, ...queue.map((w) => {
+  const docs = pendingDocs(app.state).map((k) => h('a', { class: 'card review-item', href: `#/mentor/doc/${k}` }, h('div', null, h('b', null, DOC_KINDS[k].title), h('span', null, new Date(app.state.docs[k].submittedAt).toLocaleString()), h('em', null, 'Waiting for your approval')), chip('Review', 'gold')));
+  if (!queue.length && !docs.length) return mount(body, card(h('p', null, 'Nothing is waiting for you.')), historyBlock());
+  mount(body, ...docs, ...queue.map((w) => {
     const q = app.content.questions.get(w.questionId);
     return h('a', { class: 'card review-item', href: `#/mentor/review/${w.wid}` }, h('div', null, h('b', null, 'Level ' + roman(app.content.blueprints.get(blueprintOf(w))?.level ?? 1) + ' Written Answer'), h('span', null, new Date(w.at).toLocaleString()), h('em', null, q.prompt.slice(0, 90) + '…')), chip('Review', 'gold'));
   }), historyBlock());
@@ -110,7 +121,7 @@ export function mentorReviewView({ wid }) {
   const rubric = h('ul', { class: 'rubric-check' }, ...q.rubric.map((r) => h('li', null, h('label', null, h('input', { type: 'checkbox', checked: !!marks[r.id], onchange: (e) => (marks[r.id] = e.target.checked) }), h('span', null, r.text, r.required ? h('em', null, ' (required)') : null)))));
 
   mount(screen,
-    h('div', { class: 'level-head' }, h('div', { class: 'eyebrow' }, 'Written Answer'), rich(q.prompt, 'p', { class: 'q-prompt' })),
+    h('div', { class: 'level-head' }, h('div', { class: 'eyebrow' }, 'Written Answer'), q.stimulus ? stimulusNode(q.stimulus) : null, rich(q.prompt, 'p', { class: 'q-prompt' })),
     h('div', { class: 'card' }, h('div', { class: 'card-title' }, 'The Student\'s Answer'), h('p', { class: 'student-text' }, w.text), w.selfAssessed ? chip('Self-assessed', 'sky') : null),
     h('details', { class: 'card' }, h('summary', null, 'Model Answer'), rich(q.modelAnswer, 'p')),
     h('div', { class: 'card' }, h('div', { class: 'card-title' }, 'Rubric'), rubric, h('p', { class: 'hint-line' }, 'All required points must be met for "Meets". The rubric is a guide; the verdict is yours.')),
@@ -184,4 +195,71 @@ function filesTab(body) {
         button('Export Everything', { onClick: async () => { await deliverFile(`hls-academy-${new Date().toISOString().slice(0, 10)}.json`, await makePackage('all')); } }),
         button('Export My Reviews Only', { variant: 'ghost', onClick: async () => { await deliverFile(`hls-academy-mentor-reviews-${new Date().toISOString().slice(0, 10)}.json`, await makePackage('mentor')); } }),
         restoreControl('Import A File'))));
+}
+
+
+/* ------------------------------------------------------------------ approving a document */
+
+/** The five charts of the Two-Person Test. Fixed seeds, so the student and the mentor always see the same five. */
+const TEST_KIT = [
+  { recipe: 'trend-up', seed: 4101 },
+  { recipe: 'range', seed: 4102 },
+  { recipe: 'trend-down', seed: 4103 },
+  { recipe: 'broadening', seed: 4104 },
+  { recipe: 'quiet-expand', seed: 4105 }
+];
+
+const DOC_ROWS = {
+  platforms: (d) => PLATFORM_TASKS.flatMap((t) => [[`${t.lesson} · ${t.label}`, t.fields.map(([id, label]) => `${label}: ${((d.tasks || {})[t.id] || {})[id] ?? '—'}`).join('\n')]]),
+  pathlive: (d) => [...PATH_FIELDS.map((f) => [f.label, d[f.id] || 'Not written']), ['Understands It Is Not A Strategy', d.ack ? 'Yes' : 'No']],
+  strategy: (d) => [
+    ...STRATEGY_FIELDS.map((f) => [`${f.n}. ${f.label}`, d[f.id] || 'Not written']),
+    ['Expectations Before Testing', d.hypothesis || 'Not written (optional now)']
+  ],
+  riskplan: (d) => [
+    ...RISK_FIELDS.map((f) => [f.label, typeof d[f.id] === 'number' ? (f.prefix || '') + d[f.id].toLocaleString('en-US') + (f.suffix || '') : 'Not set']),
+    ['Loss Limit Measured On', d.lossMeasure === 'closed' ? 'Closed trades only' : d.lossMeasure === 'open' ? 'Open losses too' : 'Not set'],
+    ['Sizes From The Stop, Rounds Down', d.sizing ? 'Yes' : 'No'],
+    ['Risk Never Rises After A Loss', d.noRaise ? 'Yes' : 'No'],
+    ['News Rule', d.news || 'Not written'],
+    ...BEHAVIOR_FIELDS.map((f) => [f.label, typeof d[f.id] === 'number' ? d[f.id] + (f.suffix || '') : 'Not set (optional)']),
+    ['Behavior Rules', d.behavior || 'Not written (optional)']
+  ]
+};
+
+export function mentorDocView({ kind }) {
+  const screen = begin({ title: DOC_KINDS[kind] ? DOC_KINDS[kind].title : 'Document', back: '#/mentor' });
+  if (!unlocked) return gate(screen);
+  const def = DOC_KINDS[kind];
+  const doc = app.state.docs[kind];
+  if (!def || !doc) return mount(screen, card(h('p', null, 'That document could not be found.')));
+  const d = doc.data;
+  const rows = (DOC_ROWS[kind] || (() => [['Content', JSON.stringify(d)]]))(d);
+  const checks = kind === 'riskplan' ? checkRiskPlan(d, app.state.settings.riskCapPct ?? 1) : kind === 'strategy' ? checkStrategy(d) : kind === 'platforms' ? checkPlatforms(d).map((c) => ({ ok: c.ok, text: c.label + (c.ok ? '' : ': ' + c.issues[0]) })) : kind === 'pathlive' ? checkPath(d) : [];
+  const flags = kind === 'strategy' ? vagueFlags(d) : [];
+  const kitBoxes = kind === 'strategy' ? TEST_KIT.map((_, i) => h('input', { type: 'checkbox', 'aria-label': `Chart ${i + 1} decided`, onchange: () => { approveBtn.disabled = !kitBoxes.every((b) => b.checked); } })) : [];
+  const cons = kind === 'riskplan' ? riskConsequences(d) : null;
+  const status = docStatus(app.state, kind);
+  const commentIn = h('textarea', { class: 'written', rows: 4, 'aria-label': 'Comment', placeholder: 'A short comment for the student. Required if you ask for changes.' });
+  const approveBtn = button('Approve', { onClick: () => finish('approved') });
+  if (kind === 'strategy') approveBtn.disabled = true;
+  const finish = (verdict) => {
+    if (verdict === 'changes' && !commentIn.value.trim()) return toast('Write what needs to change.');
+    emit('mentor.doc-review', { kind, verdict, comment: commentIn.value.trim() });
+    if (verdict === 'approved' && kind === 'strategy' && !kitBoxes.every((b) => b.checked)) return toast('Tick all five charts first.');
+    if (verdict === 'approved') emit('practical.done', { id: def.practical, by: 'mentor', note: def.title + ' approved' });
+    toast(verdict === 'approved' ? 'Approved' : 'Sent back');
+    go('#/mentor');
+  };
+  mount(screen,
+    h('div', { class: 'level-head' }, h('div', { class: 'eyebrow' }, def.title), h('h1', null, app.state.profile.name || 'Student'), chip(DOC_STATUS_LABEL[status], status === 'approved' ? 'emerald' : 'gold')),
+    h('div', { class: 'card' }, h('div', { class: 'card-title' }, 'What Was Written'), ...rows.map(([k, v]) => h('div', { class: 'part-score' }, h('span', null, k), h('b', null, String(v))))),
+    checks.length ? h('div', { class: 'card' }, h('div', { class: 'card-title' }, 'The App\'s Consistency Checks'), ...checks.map((c) => h('div', { class: 'rp-check ' + (c.ok ? 'ok' : 'todo') }, h('span', null, c.ok ? '✓' : '○'), h('span', null, c.text)))) : null,
+    cons ? h('div', { class: 'card' }, h('div', { class: 'card-title' }, 'What The Numbers Mean'), h('p', null, `Each trade risks $${Math.round(cons.perTrade).toLocaleString('en-US')}. ${cons.dailyLosses} full losses reach the daily limit. After 10 losses in a row the account is down ${cons.after10.drawdownPct.toFixed(1)}%, which needs a gain of ${cons.after10.recoveryPct.toFixed(1)}% to recover.`), h('p', { class: 'hint-line' }, 'You approve the plan as a plan a student could follow. The course does not choose the numbers.')) : null,
+    flags.length ? h('div', { class: 'card' }, h('div', { class: 'card-title' }, 'Vague Words Found'), ...flags.map((f) => h('p', null, `${f.label}: ${f.found.join(', ')}`))) : null,
+    kind === 'strategy' ? h('div', { class: 'card' }, h('div', { class: 'card-title' }, 'The Two-Person Test'),
+      h('p', null, 'Apply the written rules to each of the five charts below. For each, decide: trade (and where) or no trade. Tick a chart only if you reached a decision without having to ask the student what a rule meant.'),
+      ...TEST_KIT.map((k, i) => h('div', { class: 'kit-chart' }, h('label', { class: 'rp-toggle' }, kitBoxes[i], h('span', null, `Chart ${i + 1}: I reached a decision from the rules alone.`)), chartStim({ ...k, marks: 'none', caption: `Chart ${i + 1} of 5. Synthetic.` })))) : null,
+    h('div', { class: 'card' }, h('div', { class: 'card-title' }, 'Your Decision'), commentIn),
+    h('div', { class: 'qactions' }, approveBtn, button('Ask For Changes', { variant: 'ghost', onClick: () => finish('changes') })));
 }

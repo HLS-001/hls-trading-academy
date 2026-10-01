@@ -2,6 +2,9 @@
 
 import { h, s, mdInline } from '../ui/dom.js';
 import { simulateTraders } from '../sim/prob.js';
+import { chartView } from '../ui/chartview.js';
+import { makeChart } from '../charts/synth.js';
+import { swings, structural } from '../charts/detect.js';
 
 export function streakChart({ seed, winRate, trades, traders }) {
   const data = simulateTraders({ seed, winRate, trades, traders });
@@ -36,9 +39,56 @@ export function streakChart({ seed, winRate, trades, traders }) {
     h('div', { class: 'stim-foot' }, `Ending totals (wins minus losses) range from ${worst.total} to +${best.total}.`));
 }
 
+/** A small table shown above a question: quotes, a trade log, a calendar, a supplied result. */
+export function tableStim({ title, sub, head = [], rows = [], foot, tag = 'Data', note, text = false }) {
+  return h('div', { class: 'stim tablestim' },
+    h('div', { class: 'stim-tag' }, tag),
+    title ? h('div', { class: 'stim-title' }, title) : null,
+    sub ? h('div', { class: 'stim-sub' }, sub) : null,
+    h('div', { class: 'tbl-wrap' }, h('table', { class: 'stim-table' + (text ? ' text' : '') },
+      head.length ? h('thead', null, h('tr', null, ...head.map((c) => h('th', null, String(c))))) : null,
+      h('tbody', null, ...rows.map((r) => h('tr', null, ...r.map((c) => h('td', { html: mdInline(String(c)) }))))))),
+    foot ? h('div', { class: 'stim-foot' }, foot) : null,
+    note ? h('div', { class: 'stim-foot' }, note) : null);
+}
+
+/** A vertical price ladder: the market (bid and ask) and any marked levels, highest price at the top. */
+export function ladderStim({ pair, bid, ask, dq = 5, levels = [], title }) {
+  const rows = [
+    { price: ask, label: 'Ask · buy price', tone: 'ask' },
+    { price: bid, label: 'Bid · sell price', tone: 'bid' },
+    ...levels.map((l) => ({ price: l.price, label: l.label, tone: l.tone || 'level' }))
+  ].sort((a, b) => b.price - a.price);
+  return h('div', { class: 'stim ladder' },
+    h('div', { class: 'stim-tag' }, 'The Market'),
+    title ? h('div', { class: 'stim-title' }, title) : null,
+    h('div', { class: 'ladder-rows' }, ...rows.map((r) => h('div', { class: 'ladder-row ' + r.tone }, h('b', null, Number(r.price).toFixed(dq)), h('span', null, r.label)))));
+}
+
+/**
+ * A supplied chart to read: { kind: 'chart', recipe, seed, n, order, trim, marks: 'swings' | 'none', caption }.
+ * The chart is made from the seed, so a written answer about it can be read against the same chart by the mentor.
+ */
+export function chartStim({ recipe, seed, n = 2, order = 1, trim = 0, marks = 'swings', caption }) {
+  const made = makeChart(recipe, seed, { n, order });
+  const upto = made.candles.length - 1 - trim;
+  const cs = made.candles.slice(0, upto + 1);
+  let list = swings(made.candles, n, upto);
+  if (order === 2) list = structural(list);
+  const view = chartView({ candles: cs, height: 220, points: marks === 'swings' ? list.map((x) => ({ i: x.i, kind: x.type, label: x.type === 'high' ? 'H' : 'L' })) : [] });
+  return h('div', { class: 'stim chartstim' },
+    h('div', { class: 'stim-tag' }, 'The Chart'),
+    caption ? h('div', { class: 'stim-sub' }, caption) : null,
+    view.el,
+    h('div', { class: 'stim-foot' }, marks === 'swings' ? `H and L mark the confirmed ${order === 2 ? 'structural ' : ''}swing highs and lows (size ${n}). The latest bars are not confirmed.` : 'No swings are marked.'));
+}
+
 export function stimulusNode(stim) {
   if (!stim) return null;
+  if (stim.kind === 'table') return tableStim(stim);
+  if (stim.kind === 'ladder') return ladderStim(stim);
   if (stim.kind === 'text') return h('div', { class: 'stim scenario' }, h('div', { class: 'stim-tag' }, 'Scenario'), h('p', { html: mdInline(stim.text) }));
   if (stim.kind === 'streaksim') return streakChart(stim);
+  if (stim.kind === 'chart') return chartStim(stim);
   return null;
 }

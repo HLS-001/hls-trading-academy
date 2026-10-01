@@ -11,7 +11,7 @@ import { deliverFile, readFile, isStandalone, isIOS } from '../core/platform.js'
 export function makePackage(kind = 'all') {
   const events = app.store ? null : null;
   return app.store.allEvents().then((all) => {
-    const list = kind === 'mentor' ? all.filter((e) => e.type.startsWith('mentor.') || e.type === 'settings.set') : all;
+    const list = kind === 'mentor' ? all.filter((e) => e.type.startsWith('mentor.') || ['settings.set', 'practical.done', 'assignment.create', 'assignment.review', 'assignment.finalize', 'method.save', 'method.release'].includes(e.type)) : all;
     return JSON.stringify({ app: 'hls-trading-academy', schema: 1, kind, exportedAt: new Date().toISOString(), profile: { name: app.state.profile.name }, events: list });
   });
 }

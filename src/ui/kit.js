@@ -13,6 +13,9 @@ export const card = (attrs, ...kids) => {
   return a ? h('div', { ...a, class: ('card ' + (a.class || '')).trim() }, ...kids) : h('div', { class: 'card' }, attrs, ...kids);
 };
 
+/** The banner that keeps Track P from reading as part of the trading education. */
+export const trackBanner = () => h('div', { class: 'trackp-banner', role: 'note' }, 'Practical Track — Not Part Of The Trading Education Ladder. No Broker Is Recommended.');
+
 export const ornament = () => h('div', { class: 'orn', 'aria-hidden': 'true' }, h('i'), h('b'), h('i'));
 
 export function screenTitle(title, sub) {
@@ -52,6 +55,7 @@ const ICONS = {
   today: '<circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
   curriculum: '<path d="M5 20V8M10 20V8M14 20V8M19 20V8M3 8l9-5 9 5M3 20h18"/>',
   practice: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
+  journal: '<path d="M6 3h11a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6zM6 3v18M10 8h5M10 12h5"/>',
   progress: '<path d="M6 20c0-8 4-14 12-16-1 8-5 14-12 16zM6 20l6-8"/>',
   back: '<path d="M15 5l-7 7 7 7"/>',
   mentor: '<path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/>',

@@ -6,6 +6,8 @@
  */
 
 import { gradeNumeric, formatUnit } from './templates.js';
+import { gradeChart } from '../charts/tasks.js';
+import { gradeBranch, gradeAudit } from './scenario.js';
 
 const same = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
 
@@ -30,6 +32,11 @@ export function gradeQuestion(q, response) {
     case 'sequence': return gradeSequence(q, response);
     case 'match': return gradeMatch(q, response);
     case 'written': return { pending: true, correct: false, score: 0, errorTags: [], feedback: '' };
+    case 'flaws': return gradeFlaws(q, response);
+    case 'place': return gradePlace(q, response);
+    case 'chart': return gradeChart(q, response);
+    case 'branch': return gradeBranch(q, response);
+    case 'audit': return gradeAudit(q, response);
     case 'frame': return gradeFrame(q, response);
     default: throw new Error('Cannot grade question type: ' + q.type);
   }
@@ -107,6 +114,26 @@ function gradeMatch(q, response) {
   const ids = q.left.map((l) => l.id);
   const right = ids.filter((id) => r[id] === q.answer[id]).length;
   return { correct: right === ids.length, score: right / ids.length, errorTags: [], feedback: q.explanation || '', expected: q.answer };
+}
+
+function gradePlace(q, response) {
+  const ok = q.answer.some((p) => Math.abs(p - Number(response)) < 1e-9);
+  return { correct: ok, score: ok ? 1 : 0, errorTags: ok ? [] : ['wrong-side-of-market'], feedback: q.explanation || '', expected: q.answer };
+}
+
+function gradeFlaws(q, response) {
+  const r = response || {};
+  const ids = q.claims.map((c) => c.id);
+  const wrong = ids.filter((id) => r[id] !== q.answer[id]);
+  const feedback = wrong.map((id) => (q.claimFeedback && q.claimFeedback[id]) || '').filter(Boolean).join(' ');
+  return {
+    correct: wrong.length === 0,
+    score: (ids.length - wrong.length) / ids.length,
+    errorTags: [],
+    feedback: wrong.length === 0 ? q.explanation || '' : (feedback + ' ' + (q.explanation || '')).trim(),
+    wrongItems: wrong,
+    expected: q.answer
+  };
 }
 
 function gradeFrame(q, response) {

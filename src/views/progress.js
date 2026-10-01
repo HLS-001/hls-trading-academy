@@ -29,7 +29,7 @@ export function progressView() {
   const levels = h('div', { class: 'card' }, h('div', { class: 'card-title' }, 'Levels'),
     ...c.levels.filter((l) => !l.planned).map((l) => {
       const s = levelStatus(l, st, c);
-      return h('a', { class: 'lvl-row', href: `#/level/${l.number}` }, h('span', null, l.number === 0 ? 'Orientation' : `Level ${roman(l.number)} · ${l.title}`), bar(s === 'passed' ? 1 : levelProgress(l, st, c)), h('b', null, s === 'passed' ? 'Done' : Math.round(levelProgress(l, st, c) * 100) + '%'));
+      return h('a', { class: 'lvl-row', href: `#/level/${l.number}` }, h('span', null, l.number === 0 ? 'Orientation' : l.track ? `Track P · ${l.title.replace('Track P: ', '')}` : `Level ${roman(l.number)} · ${l.title}`), bar(s === 'passed' ? 1 : levelProgress(l, st, c)), h('b', null, s === 'passed' ? 'Done' : Math.round(levelProgress(l, st, c) * 100) + '%'));
     }),
     h('p', { class: 'hint-line' }, `${prog.passed} of ${prog.total} levels passed. More levels are being built.`));
 

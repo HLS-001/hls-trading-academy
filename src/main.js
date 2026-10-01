@@ -12,10 +12,14 @@ import { curriculumView, levelView } from './views/curriculum.js';
 import { lessonView } from './views/lesson.js';
 import { examView, examResultView, reviewView } from './views/exam.js';
 import { warmupView, focusView } from './views/session.js';
-import { practiceView, pipValuePage, labPage } from './views/practice.js';
+import { practiceView, pipValuePage, labPage, calcPage, masteryPage } from './views/practice.js';
 import { progressView } from './views/progress.js';
 import { settingsView } from './views/settings.js';
-import { mentorView, mentorReviewView } from './views/mentor.js';
+import { mentorView, mentorReviewView, mentorDocView } from './views/mentor.js';
+import { riskPlanPage, strategyPage, backtestPage, planSeriesPage, platformsPage, brokerPage, pathPage } from './views/tools.js';
+import { journalView, journalFormView } from './views/journal.js';
+import { assignmentView, mentorAssignmentView } from './views/assignments.js';
+import { methodologyEditorView, methodologyView } from './views/methodology.js';
 import { welcomeView } from './views/welcome.js';
 
 function registerServiceWorker() {
@@ -85,10 +89,26 @@ async function main() {
   route('/practice', () => practiceView());
   route('/practice/pip-value', () => pipValuePage());
   route('/practice/lab/:id', (p) => labPage(p));
+  route('/practice/calc/:id', (p) => calcPage(p));
+  route('/practice/mastery', () => masteryPage());
   route('/progress', () => progressView());
   route('/settings', () => settingsView());
   route('/mentor', () => mentorView());
   route('/mentor/review/:wid', (p) => mentorReviewView(p));
+  route('/mentor/doc/:kind', (p) => mentorDocView(p));
+  route('/tools/risk-plan', () => riskPlanPage());
+  route('/tools/strategy', () => strategyPage());
+  route('/tools/backtest', () => backtestPage());
+  route('/tools/plan-series', () => planSeriesPage());
+  route('/tools/platforms', () => platformsPage());
+  route('/tools/broker-worksheet', () => brokerPage());
+  route('/tools/path-to-live', () => pathPage());
+  route('/methodology', () => methodologyView());
+  route('/mentor/methodology', () => methodologyEditorView());
+  route('/assignment/:id', (p) => assignmentView(p));
+  route('/mentor/assignment/:id', (p) => mentorAssignmentView(p));
+  route('/journal', (p, q) => journalView(p, q));
+  route('/journal/:id', (p) => journalFormView(p));
   onNotFound(() => {
     const el = begin({ title: 'Not Found', tab: null });
     mount(el, card({ class: 'center' }, h('p', null, 'That page does not exist.'), h('div', { class: 'qactions' }, button('Back To Today', { onClick: () => go('#/today') }))));

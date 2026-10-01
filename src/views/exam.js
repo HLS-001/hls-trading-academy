@@ -9,15 +9,25 @@ import { h, mount, rich } from '../ui/dom.js';
 import { button, card, chip, bar, ornament, leafBurst, confirmSheet } from '../ui/kit.js';
 import { begin } from '../ui/shell.js';
 import { markAnimated } from '../ui/mark.js';
-import { roman } from '../ui/roman.js';
+import { roman, levelLabel } from '../ui/roman.js';
 import { runSet, gradeAll } from '../exercises/runner.js';
-import { resolveItem, examResultOf } from '../exercises/resolve.js';
+import { resolveItem, examResultOf, isChoiceItem, kindOf } from '../exercises/resolve.js';
 import { buildForm, scoreExam } from '../learn/assess.js';
-import { examStatus } from '../learn/progress.js';
+import { examStatus, retentionStatus, rankName } from '../learn/progress.js';
 import { freshSeed } from '../learn/rng.js';
+import { masteryOf } from '../learn/mastery.js';
 import { statusText } from './curriculum.js';
+import { practicalStatus } from '../learn/docs.js';
 
 const levelOf = (bp) => app.content.levelByNumber.get(bp.level);
+
+/** For cumulative slots: which concepts belong to which level, and the student's weakest concepts first. */
+export function cumulativeContext() {
+  const c = app.content;
+  const levelConcepts = new Map(c.levels.map((l) => [l.number, l.conceptIds || []]));
+  const weak = Object.values(app.state.concepts).filter((cs) => cs.hist.length).map((cs) => ({ id: cs.concept, m: masteryOf(cs) })).sort((a, b) => a.m - b.m).map((x) => x.id);
+  return { levelConcepts, weak };
+}
 
 /* ------------------------------------------------------------------ taking the exam */
 
@@ -28,10 +38,10 @@ export async function examView({ bp: bpId }) {
   const screen = begin({ title: bp ? bp.title : 'Assessment', back: level ? `#/level/${level.number}` : '#/curriculum', focus: true });
   if (!bp) return mount(screen, card(h('p', null, 'That assessment does not exist.')));
 
-  const es = examStatus(level, app.state, c);
+  const es = level ? examStatus(level, app.state, c) : retentionStatus(bp, app.state);
   const draft = await kv.get('examDraft:' + bpId);
   if (!es.available && !draft) {
-    return mount(screen, card({ class: 'gate' }, h('h2', null, 'Not Available Yet'), h('p', null, es.reason), button('Back To The Level', { onClick: () => go(`#/level/${level.number}`) })));
+    return mount(screen, card({ class: 'gate' }, h('h2', null, 'Not Available Yet'), h('p', null, es.reason), button(level ? 'Back To The Level' : 'Back To The Curriculum', { onClick: () => go(level ? `#/level/${level.number}` : '#/curriculum') })));
   }
 
   const start = (form, prefill, startAt) => {
@@ -72,14 +82,14 @@ export async function examView({ bp: bpId }) {
   }
 
   mount(screen, h('div', { class: 'exam-intro' },
-    h('div', { class: 'eyebrow' }, `Level ${roman(level.number)}`),
+    h('div', { class: 'eyebrow' }, level ? levelLabel(level) : 'Retention Check'),
     h('h1', null, bp.title),
     ornament(),
     rich(bp.intro, 'p'),
     h('div', { class: 'parts' }, ...bp.parts.map((p) => h('div', { class: 'part-row' }, h('b', null, `Part ${p.id} · ${p.title}`), h('span', null, p.note)))),
-    h('div', { class: 'callout keypoint' }, h('div', { class: 'callout-title' }, 'How It Is Marked'), h('p', null, `You need ${Math.round(bp.passMark * 100)}% overall, at least ${Math.round(bp.partMin * 100)}% in every part, and your mentor must mark your written answer as meeting the standard. You will not see answers as you go. You will see everything at the end.`)),
+    h('div', { class: 'callout keypoint' }, h('div', { class: 'callout-title' }, 'How It Is Marked'), h('p', null, level ? `You need ${Math.round(bp.passMark * 100)}% overall, at least ${Math.round(bp.partMin * 100)}% in every part, and your mentor must mark your written answer as meeting the standard. You will not see answers as you go. You will see everything at the end.` : `You need ${Math.round(bp.passMark * 100)}% overall and at least ${Math.round(bp.partMin * 100)}% in every part. The questions come from the ideas you have been weakest on. You will not see answers as you go. You will see everything at the end.`)),
     button('Begin', { block: true, onClick: () => {
-      const form = buildForm(bp, { questions: [...c.questions.values()], templates: [...c.templates.values()], seen: app.state.seen, seed: freshSeed() });
+      const form = buildForm(bp, { questions: [...c.questions.values()], templates: [...c.templates.values()], seen: app.state.seen, seed: freshSeed(), ...cumulativeContext() });
       kv.set('examDraft:' + bpId, { form, responses: new Array(form.items.length).fill(undefined), next: 0 });
       start(form, null, 0);
     } })));
@@ -102,8 +112,8 @@ async function submit(bp, form, res) {
       qid: item.kind === 'q' ? item.q.id : undefined,
       tid: item.kind === 't' ? item.tpl.id : undefined,
       seed: item.kind === 't' ? item.seed : undefined,
-      type: item.kind === 't' ? 'numeric' : item.q.type,
-      kind: item.kind === 't' || item.q.type === 'num' ? 'numeric' : 'concept',
+      type: isChoiceItem(item) ? 'choice' : item.kind === 't' ? 'numeric' : item.q.type,
+      kind: kindOf(item),
       concepts: item.concepts,
       score: r.score ?? 0,
       correct: !!r.correct,
@@ -134,6 +144,13 @@ async function submit(bp, form, res) {
 }
 
 /* ------------------------------------------------------------------ the result */
+
+function nextLevelText(level) {
+  if (level.track) return 'Track P is finished. The Capstone comes next, with your mentor.';
+  const next = app.content.levelByNumber.get(level.number + 1);
+  if (next && !next.planned) return `Level ${roman(next.number)} is now open.`;
+  return level.number < 13 ? 'The next level is being built. Your Warm-Up will keep this level fresh in the meantime.' : 'You have finished the thirteen levels. Track P and the Capstone come next.';
+}
 
 export function examResultView({ bp: bpId, attempt: attemptId }) {
   const c = app.content;
@@ -172,17 +189,21 @@ export function examResultView({ bp: bpId, attempt: attemptId }) {
 
   const actions = h('div', { class: 'qactions col' });
   if (status === 'failed' || status === 'failed-written') {
-    const es = examStatus(level, app.state, c);
+    const es = level ? examStatus(level, app.state, c) : retentionStatus(bp, app.state);
     if (record.reviewPending && record.reviewPending.length) actions.append(button('Start The Targeted Review', { onClick: () => go(`#/review/${bpId}`) }));
-    else if (es.available) actions.append(button('Retake The Assessment', { onClick: () => go(`#/exam/${bpId}`) }));
-    actions.append(button('Back To The Level', { variant: 'ghost', onClick: () => go(`#/level/${level.number}`) }));
+    else if (es.available) actions.append(button(level ? 'Retake The Assessment' : 'Retake The Check', { onClick: () => go(`#/exam/${bpId}`) }));
+    actions.append(button(level ? 'Back To The Level' : 'Back To The Curriculum', { variant: 'ghost', onClick: () => go(level ? `#/level/${level.number}` : '#/curriculum') }));
   } else {
     actions.append(button(pass ? 'Back To The Curriculum' : 'Back To Today', { onClick: () => go(pass ? '#/curriculum' : '#/today') }));
   }
 
+  const practicals = practicalStatus(bp, app.state);
+  const practicalCard = practicals.length && status !== 'failed' && status !== 'failed-written'
+    ? h('div', { class: 'card' }, h('div', { class: 'card-title' }, 'Practical Requirement'), ...practicals.map((p) => h('div', { class: 'part-score' }, h('span', null, p.label), p.done ? chip('Done', 'emerald') : p.route ? button('Open', { variant: 'ghost', onClick: () => go(p.route) }) : chip('Waiting', 'sky'))))
+    : null;
   const celebrate = pass ? h('div', { class: 'celebrate' }, markAnimated({ size: 160 })) : null;
-  mount(screen, head, celebrate, h('div', { class: 'rule-line' }, `Pass rule: ${Math.round(bp.passMark * 100)}% overall, ${Math.round(bp.partMin * 100)}% in every part, and a written answer marked "Meets".`), parts, ...writtenBlock, diag,
-    pass ? card({ class: 'next-level' }, h('b', null, `Level ${roman(level.number)} Complete`), h('p', null, level.number < 13 ? 'The next level is being built. Your Warm-Up will keep this level fresh in the meantime.' : '')) : null, actions);
+  mount(screen, head, celebrate, h('div', { class: 'rule-line' }, level ? `Pass rule: ${Math.round(bp.passMark * 100)}% overall, ${Math.round(bp.partMin * 100)}% in every part, and a written answer marked "Meets".` : `Pass rule: ${Math.round(bp.passMark * 100)}% overall and ${Math.round(bp.partMin * 100)}% in every part.`), parts, ...writtenBlock, practicalCard, diag,
+    pass ? (level ? card({ class: 'next-level' }, h('b', null, `${levelLabel(level)} Complete`), h('p', null, nextLevelText(level))) : card({ class: 'next-level' }, h('b', null, `Rank · ${rankName(app.state.rank.current)}`), h('p', null, 'Your earlier levels have stayed with you. Your rank follows what you have passed.'))) : null, actions);
   if (celebrate) {
     const m = celebrate.querySelector('.mk');
     requestAnimationFrame(() => m && m.play());

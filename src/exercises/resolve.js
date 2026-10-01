@@ -28,7 +28,10 @@ export function resolveItem(ref, { seed } = {}) {
   throw new Error('Bad item reference');
 }
 
+export const isChoiceItem = (item) => item.kind === 't' && !!item.problem.question;
+
 export function gradeItem(item, response) {
+  if (isChoiceItem(item)) return gradeQuestion(item.problem.question, response);
   if (item.kind === 't') {
     if (item.mode === 'steps') {
       const g = gradeSteps(item.problem, response, item.tpl);
@@ -40,7 +43,7 @@ export function gradeItem(item, response) {
   return gradeQuestion(item.q, response);
 }
 
-export const kindOf = (item) => (item.kind === 't' || item.q.type === 'num' ? 'numeric' : 'concept');
+export const kindOf = (item) => (isChoiceItem(item) ? 'concept' : item.kind === 't' || item.q.type === 'num' ? 'numeric' : 'concept');
 
 /** The concepts whose HOME lesson this is, so transfer can be told apart from home-lesson practice. */
 export function homeFor(ctx) {
@@ -57,15 +60,16 @@ export function answerPayload(item, result, ctx, extra = {}) {
     qid: item.kind === 'q' ? item.q.id : undefined,
     tid: item.kind === 't' ? item.tpl.id : undefined,
     seed: item.kind === 't' ? item.seed : undefined,
-    type: item.kind === 't' ? 'numeric' : item.q.type,
+    type: isChoiceItem(item) ? 'choice' : item.kind === 't' ? 'numeric' : item.q.type,
     kind: kindOf(item),
     concepts: item.concepts,
     score: result.score ?? 0,
     correct: !!result.correct,
     errorTags: result.errorTags || [],
-    hinted: !!extra.hinted,
-    revealed: !!extra.revealed,
+    hinted: !!(extra.hinted ?? result.hinted),
+    revealed: !!(extra.revealed ?? result.revealed),
     critical: item.kind === 'q' ? !!item.q.critical : !!item.tpl.critical,
+    cluster: item.kind === 't' ? item.tpl.cluster : undefined,
     ctx: { kind: ctx.kind, ref: ctx.ref },
     homeFor: homeFor(ctx)
   };

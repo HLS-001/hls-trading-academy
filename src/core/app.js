@@ -42,8 +42,8 @@ export function subscribe(fn) {
   return () => app.listeners.delete(fn);
 }
 
-export function emit(type, payload = {}) {
-  const event = { id: newId(), t: Date.now(), type, payload };
+export function emit(type, payload = {}, at = Date.now()) {
+  const event = { id: newId(), t: at, type, payload };
   applyEvent(app.state, event);
   app.store.putEvent(event).catch((e) => {
     app.storeError = e;

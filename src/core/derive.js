@@ -11,6 +11,7 @@
 import { newConceptState, gradeFromAttempt, review, DAY } from '../learn/scheduler.js';
 import { masteryOf, withAttempt } from '../learn/mastery.js';
 import { dateInZone, addDays } from '../time/zones.js';
+import { rankFor } from '../learn/ranks.js';
 
 export const DEFAULT_SETTINGS = {
   tz: 'America/Guyana',
@@ -46,6 +47,14 @@ export function initialState() {
     overrides: [],
     counters: { answers: 0, correct: 0, kinds: {} },
     calcUses: {},
+    families: {},
+    practicals: {},
+    docs: {},
+    journal: {},
+    backtests: {},
+    plans: [],
+    assignments: {},
+    methodology: { pack: null, released: false, releasedAt: null },
     warmups: { count: 0, lastMs: null },
     reviewChecks: {},
     reflections: {},
@@ -119,6 +128,11 @@ H['question.answer'] = (s, e) => {
   k.sum += p.score;
   const base = p.tid || p.qid;
   if (base) s.seen[base] = (s.seen[base] || 0) + 1;
+  if (p.cluster && p.ctx?.kind !== 'exam') {
+    const f = (s.families[p.cluster] = s.families[p.cluster] || { hist: [] });
+    f.hist.push({ t: e.t, s: p.score, e: p.errorTags || [] });
+    f.hist = f.hist.slice(-12);
+  }
   for (const concept of p.concepts || []) {
     const before = s.concepts[concept] || newConceptState(concept);
     const wasSolid = masteryOf(before) >= 65;
@@ -151,16 +165,27 @@ H['rest.day'] = (s, e) => {
   if (!s.study.rest.includes(k)) s.study.rest.push(k);
 };
 
-function attemptStatus(attempt) {
+function attemptStatus(attempt, s) {
   if (!attempt.autoPass) return 'failed';
   const w = attempt.written || [];
   if (w.some((x) => x.status === 'pending' || x.status === 'unsubmitted')) return 'awaiting-mentor';
-  return w.every((x) => x.status === 'meets') ? 'passed' : 'failed-written';
+  if (!w.every((x) => x.status === 'meets')) return 'failed-written';
+  const missing = (attempt.practicals || []).filter((id) => !s.practicals[id]);
+  return missing.length ? 'awaiting-practical' : 'passed';
+}
+
+/** The rank follows what has been passed. A change is written to the history once. */
+function updateRank(s, t) {
+  const r = rankFor(s);
+  if (r !== s.rank.current) {
+    s.rank.current = r;
+    s.rank.history.push({ rank: r, t });
+  }
 }
 
 function settleAttempt(s, blueprintId, attempt, t) {
   const exam = s.exams[blueprintId];
-  attempt.status = attemptStatus(attempt);
+  attempt.status = attemptStatus(attempt, s);
   if (attempt.status === 'passed') {
     exam.passed = true;
     exam.passedAt = exam.passedAt || t;
@@ -169,6 +194,7 @@ function settleAttempt(s, blueprintId, attempt, t) {
   } else if (attempt.status === 'failed') {
     exam.reviewPending = (attempt.diagnostic?.weakConcepts || []).map((c) => c.concept);
   }
+  updateRank(s, t);
 }
 
 H['exam.submit'] = (s, e) => {
@@ -185,6 +211,7 @@ H['exam.submit'] = (s, e) => {
     gates: p.result.gates,
     autoPass: p.result.autoPass,
     written: p.result.written,
+    practicals: p.result.practicals || [],
     diagnostic: p.result.diagnostic,
     status: p.result.status
   };
@@ -260,6 +287,112 @@ H['mentor.review'] = (s, e) => {
 H['mentor.override'] = (s, e) => {
   s.overrides.push({ ...e.payload, t: e.t });
   if (e.payload.type === 'pass-level') s.levelsPassed[e.payload.target] = e.t;
+  if (e.payload.type === 'pass-check') {
+    const id = e.payload.target;
+    const exam = (s.exams[id] = s.exams[id] || { attempts: [], passed: false, passedAt: null, reviewPending: [] });
+    exam.passed = true;
+    exam.passedAt = exam.passedAt || e.t;
+    exam.reviewPending = [];
+  }
+  updateRank(s, e.t);
+};
+
+/** A practical requirement was met (a Risk Plan approved, a checklist verified, a backtest audit passed...). */
+H['practical.done'] = (s, e) => {
+  s.practicals[e.payload.id] = { t: e.t, by: e.payload.by || 'mentor', note: e.payload.note || '' };
+  for (const [blueprintId, exam] of Object.entries(s.exams)) {
+    for (const attempt of exam.attempts) if (attempt.status === 'awaiting-practical') settleAttempt(s, blueprintId, attempt, e.t);
+  }
+};
+
+/** A document (Risk Plan, strategy...) is saved, sent to the mentor, and reviewed. Status is derived: see learn/docs.js. */
+H['doc.save'] = (s, e) => {
+  const { kind, data } = e.payload;
+  const cur = s.docs[kind] || { rev: 0 };
+  s.docs[kind] = { ...cur, data, savedAt: e.t, rev: (cur.rev || 0) + 1 };
+};
+H['doc.submit'] = (s, e) => {
+  const d = s.docs[e.payload.kind];
+  if (d) d.submittedAt = e.t;
+};
+H['mentor.doc-review'] = (s, e) => {
+  const d = s.docs[e.payload.kind];
+  if (d) d.review = { verdict: e.payload.verdict, comment: e.payload.comment || '', at: e.t };
+};
+
+/** The journal: trades the student entered by hand. Backtest trades are read from the runs. */
+H['journal.save'] = (s, e) => {
+  const t = e.payload.trade;
+  s.journal[t.id] = { ...(s.journal[t.id] || {}), ...t, updatedAt: e.t, createdAt: (s.journal[t.id] && s.journal[t.id].createdAt) || e.t };
+};
+H['journal.delete'] = (s, e) => {
+  delete s.journal[e.payload.id];
+};
+
+/** The Backtest Lab. Everything is time-stamped by the event, so the protocol checks can tell what was done before what. */
+const run = (s, id) => s.backtests[id];
+H['backtest.start'] = (s, e) => {
+  s.backtests[e.payload.runId] = { id: e.payload.runId, seed: e.payload.seed, startedAt: e.t, log: [] };
+};
+H['backtest.hypothesis'] = (s, e) => {
+  const r = run(s, e.payload.runId);
+  if (r) r.hypothesis = { ...e.payload.hypothesis, t: e.t };
+};
+H['backtest.split'] = (s, e) => {
+  const r = run(s, e.payload.runId);
+  if (r) r.split = { slip: e.payload.slip, t: e.t };
+};
+H['backtest.log'] = (s, e) => {
+  const r = run(s, e.payload.runId);
+  if (r) r.log.push({ bar: e.payload.bar, kind: e.payload.kind, reason: e.payload.reason || null, recordedR: e.payload.recordedR ?? null, cur: e.payload.cur, t: e.t });
+};
+H['backtest.record'] = (s, e) => {
+  const r = run(s, e.payload.runId);
+  const l = r && r.log.find((x) => x.bar === e.payload.bar && x.kind === 'trade');
+  if (l) l.recordedR = e.payload.recordedR;
+};
+H['backtest.concludeIS'] = (s, e) => {
+  const r = run(s, e.payload.runId);
+  if (r) r.concludeIS = { text: e.payload.text, t: e.t };
+};
+H['backtest.final'] = (s, e) => {
+  const r = run(s, e.payload.runId);
+  if (r) r.final = { text: e.payload.text, verdict: e.payload.verdict, lo: e.payload.lo, hi: e.payload.hi, saysIncludesZero: !!e.payload.saysIncludesZero, t: e.t };
+};
+
+/** A hidden-future plan: the process score is graded before the outcome, and the two are kept apart. */
+H['plan.submit'] = (s, e) => {
+  s.plans.push({ ...e.payload, t: e.t });
+};
+
+/** Module M2: an assignment the mentor sets, the student's answers, the mentor's review of each chart, and the final verdict. */
+H['assignment.create'] = (s, e) => {
+  const p = e.payload;
+  s.assignments[p.id] = { id: p.id, kind: p.kind || 'general', seed: p.seed, count: p.count, noSetupShare: p.noSetupShare ?? null, mode: p.mode || 'sitting', createdAt: e.t, answers: {}, reviews: {}, finalizedAt: null, result: null };
+};
+H['assignment.answer'] = (s, e) => {
+  const a = s.assignments[e.payload.id];
+  if (a && !a.answers[e.payload.idx]) a.answers[e.payload.idx] = { ...e.payload.answers, t: e.t };
+};
+H['assignment.review'] = (s, e) => {
+  const a = s.assignments[e.payload.id];
+  if (a) a.reviews[e.payload.idx] = { reasoning: e.payload.reasoning || null, accepted: e.payload.accepted || [], comment: e.payload.comment || '', at: e.t };
+};
+H['assignment.finalize'] = (s, e) => {
+  const a = s.assignments[e.payload.id];
+  if (a) {
+    a.finalizedAt = e.t;
+    a.result = { pass: !!e.payload.pass, note: e.payload.note || '' };
+  }
+};
+
+/** Module M1: the mentor's methodology pack. It ships empty. The student sees it only after the mentor releases it. */
+H['method.save'] = (s, e) => {
+  s.methodology.pack = e.payload.pack;
+};
+H['method.release'] = (s, e) => {
+  s.methodology.released = !!e.payload.on;
+  s.methodology.releasedAt = e.payload.on ? e.t : null;
 };
 
 H['review.check'] = (s, e) => {

@@ -14,6 +14,9 @@ import * as C from '../calc/index.js';
 import { pretty } from '../calc/markets.js';
 import { evaluate } from './expr.js';
 import { makeRng } from './rng.js';
+import { buildChartQuestion } from '../charts/tasks.js';
+import { resolveWindow, CONVENTIONAL_SET, clockGap, sessionsOpenAt } from '../time/sessions.js';
+import { partsInZone, instantFromWall } from '../time/zones.js';
 
 /* ------------------------------------------------ function registry (templates call the real engine) */
 
@@ -28,12 +31,42 @@ export const FN = {
   positionSize: (a) => C.positionSize(a),
   rMultiple: (a) => C.rMultiple(a),
   expectancyR: (a) => C.expectancyR(a),
+  // time: the hour (0 to 23) on a zone's clock at which a session opens on a date, and the gap between two markets' clocks
+  sessionOpenHour: (a) => partsInZone(resolveWindow(CONVENTIONAL_SET.sessions.find((x) => x.id === a.session), a.date).startMs, a.tz).hour,
+  sessionCloseHour: (a) => partsInZone(resolveWindow(CONVENTIONAL_SET.sessions.find((x) => x.id === a.session), a.date).endMs, a.tz).hour,
+  clockGapHours: (a) => clockGap(a.date, a.a, a.b),
+  // a release at a wall time on some clock, as the hour (0 to 23) on another clock; and the hours between two wall times
+  eventHour: (a) => {
+    const [y, m, d] = a.date.split('-').map(Number);
+    return partsInZone(instantFromWall(a.tz, y, m, d, a.hour, a.minute || 0), a.to).hour;
+  },
+  hoursBetween: (a) => {
+    const [y, m, d] = a.date.split('-').map(Number);
+    return (instantFromWall(a.tzB, y, m, d, a.hourB, a.minuteB || 0) - instantFromWall(a.tzA, y, m, d, a.hourA, a.minuteA || 0)) / 3600000;
+  },
+  // how many sessions are open at a wall time on a zone's clock
+  sessionsOpenCount: (a) => {
+    const [y, m, d] = a.date.split('-').map(Number);
+    return sessionsOpenAt(CONVENTIONAL_SET, instantFromWall(a.tz, y, m, d, a.hour, 0)).length;
+  },
   breakevenWinRate: (a) => C.breakevenWinRate(a.rr),
   recoveryRequired: (a) => C.recoveryRequired(a.d),
   marginRequired: (a) => C.marginRequired(a),
   inverseQuote: (a) => C.inverseQuote(a.rate),
   crossRate: (a) => C.crossRate(a.aPerB, a.cPerB),
-  pnlMoney: (a) => C.pnlMoney(a)
+  pnlMoney: (a) => C.pnlMoney(a),
+  spreadPips: (a) => C.spreadPips(a.symbol, a.bid, a.ask),
+  unitsFromLots: (a) => C.unitsFromLots(a.lots),
+  notionalValue: (a) => C.notionalValue(a),
+  pipsToMarginLevel: (a) => C.pipsToMarginLevel(a),
+  swapMoney: (a) => C.swapMoney(a),
+  commissionMoney: (a) => C.commissionMoney(a),
+  pipsResult: (a) => C.pipsResult(a),
+  rewardPips: (a) => C.rewardPips(a.symbol, a.entry, a.target),
+  rewardMoney: (a) => C.rewardMoney(a),
+  percentRisk: (a) => C.percentRisk(a),
+  rFromPrices: (a) => C.rFromPrices(a),
+  floorToStep: (a) => C.floorToStep(a.x, a.step)
 };
 
 /* ------------------------------------------------ parameters */
@@ -44,10 +77,28 @@ function genParam(spec, rng, ctx) {
   if ('float' in spec) return rng.float(spec.float[0], spec.float[1], spec.float[2]);
   if ('const' in spec) return spec.const;
   if ('expr' in spec) return evaluate(spec.expr, numericVars(ctx));
+  if ('list' in spec) {
+    // a list of trade results: { list: { n: [6, 8], pick: [-1, -1, 0.5, 2], mixed: true } }
+    const L = spec.list;
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const n = L.nPick ? rng.pick(L.nPick) : Array.isArray(L.n) ? rng.int(L.n[0], L.n[1]) : L.n;
+      const out = Array.from({ length: n }, () => rng.pick(L.pick));
+      if (!L.mixed || (out.some((x) => x > 0) && out.some((x) => x < 0))) return out;
+    }
+    throw new Error('could not build a mixed list');
+  }
+  if ('fixed' in spec) return Number(ctx[spec.fixed]).toFixed(typeof spec.dp === 'number' ? spec.dp : ctx[spec.dp]);
+  if ('map' in spec) {
+    // a word that depends on another value: { map: 'dir', values: { '1': 'rose', '-1': 'fell' } }
+    const v = ctx[spec.map];
+    if (!(String(v) in spec.values)) throw new Error('map has no entry for ' + v);
+    const word = spec.values[String(v)];
+    return typeof word === 'string' && word.includes('{{') ? fillText(word, ctx) : word;
+  }
   throw new Error('Unknown parameter spec: ' + JSON.stringify(spec));
 }
 
-const numericVars = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => typeof v === 'number'));
+const numericVars = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => typeof v === 'number' || (Array.isArray(v) && v.every((x) => typeof x === 'number'))));
 
 /** Replace "$name" references (also inside objects) with parameter values. */
 function resolveArgs(v, ctx) {
@@ -95,6 +146,16 @@ function fmt(value, filter) {
     case 'sign': return (value < 0 ? '−' : '+') + trim(Math.abs(value));
     case 'abs': return trim(Math.abs(value));
     case 'r': return (value < 0 ? '−' : value > 0 ? '+' : '') + trim(Math.abs(value)) + 'R';
+    case 'rlist': return (value || []).map((x) => (x < 0 ? '−' : x > 0 ? '+' : '') + trim(Math.abs(x)) + 'R').join(', ');
+    case 'nlist': return (value || []).map((x) => trim(x)).join(', ');
+    case 'base': return String(value).slice(0, 3);
+    case 'quote': return String(value).slice(3, 6);
+    case 'comma': return Number(value).toLocaleString('en-US', { maximumFractionDigits: arg === undefined ? 4 : +arg, minimumFractionDigits: arg === undefined ? 0 : +arg });
+    case 'dec': return trim(value, +arg);
+    case 'up': return String(value).toUpperCase();
+    case 'cap': return String(value).charAt(0).toUpperCase() + String(value).slice(1);
+    case 'hm': { const m = Math.round(Number(value)); return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); }
+    case 'ord': { const n = Number(value); const t = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'); return n + t; }
     default: return typeof value === 'number' ? trim(value) : String(value);
   }
 }
@@ -114,12 +175,94 @@ export function formatUnit(value, unit = {}) {
 
 /* ------------------------------------------------ instantiate */
 
+const LETTERS = 'abcdefgh';
+
+/**
+ * A choice template: the wording and the options are filled from seeded numbers, and the FIRST option is the right
+ * one. A distractor may carry a mistake tag and a reason; `when` (an expression, non-zero = include) drops a distractor
+ * that would not make sense for these numbers. Distractors that repeat another option's text are dropped.
+ */
+function instantiateChoice(tpl, seed, ctx, params) {
+  for (const c of tpl.calc || []) ctx[c.id] = compute(c, ctx);
+  const options = [];
+  const seen = new Set();
+  tpl.options.forEach((o, i) => {
+    if (o.when !== undefined && !evaluate(o.when, numericVars(ctx))) return;
+    const text = fillText(o.text, ctx);
+    if (seen.has(text)) return;
+    seen.add(text);
+    options.push({ id: LETTERS[options.length], text, why: o.why ? fillText(o.why, ctx) : '', tag: o.tag, correct: i === 0 });
+  });
+  if (options.length < 3) throw new Error('a choice template needs at least 3 distinct options for every seed');
+  if (!options[0].correct) throw new Error('the first option (the right one) was dropped');
+  const optionFeedback = {};
+  const optionTags = {};
+  for (const o of options) {
+    if (o.why) optionFeedback[o.id] = o.why;
+    if (o.tag) optionTags[o.id] = o.tag;
+  }
+  const prompt = fillText(tpl.prompt, ctx);
+  const explanation = tpl.explain ? fillText(tpl.explain, ctx) : '';
+  const id = `${tpl.id}#${seed}`;
+  const stimulus = tpl.stimulus ? resolveArgs(tpl.stimulus, ctx) : undefined;
+  const question = { id, type: 'mcq', stimulus, concepts: tpl.concepts || [], prompt, options: options.map(({ id: oid, text }) => ({ id: oid, text })), answer: 'a', optionFeedback, optionTags, explanation, tags: tpl.tags || [], critical: !!tpl.critical };
+  return {
+    kind: 'choice',
+    id,
+    tid: tpl.id,
+    seed,
+    type: 'choice',
+    concepts: tpl.concepts || [],
+    cluster: tpl.cluster,
+    difficulty: tpl.difficulty || 1,
+    critical: !!tpl.critical,
+    tags: tpl.tags || [],
+    prompt,
+    params,
+    explanation,
+    answerText: options[0].text,
+    question
+  };
+}
+
+/** The valid side of the market for each pending order type, from the bid and the ask. */
+export const VALID_SIDE = {
+  'buy-limit': (p, m) => p < m.ask,
+  'buy-stop': (p, m) => p > m.ask,
+  'sell-limit': (p, m) => p > m.bid,
+  'sell-stop': (p, m) => p < m.bid
+};
+
+/** A "place the order" template: tap a level on the ladder where the order would be accepted. */
+function instantiatePlace(tpl, seed, ctx, params) {
+  const spec = resolveArgs(tpl.place, ctx);
+  const m = spec.market;
+  const candidates = spec.offsets.map((o) => +(m.bid + o * m.pipSize).toFixed(m.dq));
+  const valid = candidates.filter((p) => VALID_SIDE[spec.order](p, m));
+  if (!valid.length || valid.length === candidates.length) throw new Error('a place template needs both valid and invalid levels');
+  const prompt = fillText(tpl.prompt, ctx);
+  const explanation = tpl.explain ? fillText(tpl.explain, ctx) : '';
+  const id = `${tpl.id}#${seed}`;
+  const question = { id, type: 'place', concepts: tpl.concepts || [], prompt, market: m, order: spec.order, candidates, answer: valid, explanation, tags: tpl.tags || [], critical: !!tpl.critical };
+  return { kind: 'choice', id, tid: tpl.id, seed, type: 'place', concepts: tpl.concepts || [], cluster: tpl.cluster, difficulty: tpl.difficulty || 1, critical: !!tpl.critical, tags: tpl.tags || [], prompt, params, explanation, answerText: valid.join(', '), question };
+}
+
+/** A chart template: a synthetic chart, marks to make on it, and a reference answer from the detectors. */
+function instantiateChart(tpl, seed, params) {
+  const { question, prompt, explanation } = buildChartQuestion(tpl, seed);
+  const id = `${tpl.id}#${seed}`;
+  return { kind: 'choice', id, tid: tpl.id, seed, type: 'chart', concepts: tpl.concepts || [], cluster: tpl.cluster, difficulty: tpl.difficulty || 1, critical: !!tpl.critical, tags: tpl.tags || [], prompt, params, explanation, answerText: '', question };
+}
+
 export function instantiate(tpl, seed) {
   const rng = makeRng(String(tpl.id) + '#' + seed);
   const params = {};
   for (const [name, spec] of Object.entries(tpl.params || {})) params[name] = genParam(spec, rng, params);
 
   const ctx = { ...params };
+  if (tpl.type === 'choice') return instantiateChoice(tpl, seed, ctx, params);
+  if (tpl.type === 'place') return instantiatePlace(tpl, seed, ctx, params);
+  if (tpl.type === 'chart') return instantiateChart(tpl, seed, params);
   const steps = (tpl.steps || []).map((s) => {
     const value = compute(s, ctx);
     ctx[s.id] = value;
